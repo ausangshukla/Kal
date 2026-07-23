@@ -42,11 +42,11 @@ That reduces our simulator build to the two things that make Jor *Jor*:
    ([perception.md](perception.md)), injected into Hermes context, driving the
    attentive-teacher flow-breaks.
 
-**Spike needed (first technical task):** confirm Hermes exposes (a) an event stream the
-face can subscribe to, (b) a clean way to inject perception signals into session context,
-and (c) programmatic control of the preview pane for skill-themed canvas content. If any
-are missing, they become upstream PRs — or the fallback is our own thin browser shell
-against the same gateway.
+**Spike done — verdict: glue Hermes Desktop as-is.** (a) External processes can join the
+live event WebSocket; (b) perception signals inject via a local MCP server (pull) + a
+`pre_llm_call` plugin hook (push), with a small upstream PR for true mid-turn interrupts;
+(c) the `open_preview` tool pushes live localhost pages into the pane with no CSP
+restrictions. Full recipes and file references: [spike-hermes.md](spike-hermes.md).
 
 ## V1 milestones
 
