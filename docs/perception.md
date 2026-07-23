@@ -14,6 +14,20 @@ teaching. Perception is local-first wherever hardware allows.
   "left arm too low") go to the cloud brain.
 - **Yoga vision is scoped tight**: recognize and correct **10 common poses** only.
 
+## Graceful degradation — camera is optional, always
+
+Jor must be fully usable with **no camera at all** (broken, unplugged, or muted): voice,
+face, canvas, skills, and memory all work; only the *seeing* features shed. Rules:
+
+- Perception features are **additive**, never load-bearing: emotion reading off → no
+  flow-breaks from visual signals (verbal cues still work — Jor can still *ask*);
+  pose correction off → the Yoga skill switches to describe-and-self-report ("hold the
+  pose — how does your lower back feel?") instead of refusing to run.
+- The perception service reports capability (`camera: none | face | full-body`) and
+  skills adapt via their config rather than erroring.
+- Same principle covers privacy modes: "camera off" the setting and "camera broken" the
+  hardware are the same code path.
+
 ## Pipelines
 
 ### Hearing
