@@ -26,6 +26,20 @@
 - **Talus** (Jor's own inference silicon) is a **V10 dream** — no design work now, but
   the placement-policy abstraction above is what makes it possible later.
 
+## Prototyping setup (current)
+
+Model choice is **config, not code** — the first live exercise of the placement-policy
+principle:
+
+- **Now (prototyping): Gemini Flash** — cheap and fast. Hermes `~/.hermes/config.yaml`:
+  `model.provider` pointing at Google's OpenAI-compatible endpoint with
+  `models/gemini-3-flash-preview`; key in the Hermes config/`.env`.
+- **Later (quality): Anthropic** — switch with
+  `hermes config set model anthropic/<model>` (or the interactive `hermes model`) plus
+  `ANTHROPIC_API_KEY` in `~/.hermes/.env`. No Jor code changes.
+- Skills must therefore never assume a specific model — prompts are written
+  model-agnostic, and anything model-sensitive belongs in skill `config.yaml`.
+
 ## What we build (the glue)
 
 1. **The perception bus**: local vision/audio pipelines ([perception.md](perception.md))
