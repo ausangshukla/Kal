@@ -13,6 +13,18 @@ computer or by voice command.
   states it explicitly and the face cues it subtly.
 - **Persona resolution:** global user override → else skill config. (Kal can pin "always
   gentle" or "always drill-sergeant" across every skill.)
+- **Every skill declares a `modality`** — *how* it teaches, distinct from *who* the
+  persona is. The modality defines the interaction loop the skill runs:
+  - `socratic` — Jor leads with questions, never gives the answer while a question can
+    get Kal there; answers earn follow-up questions. **First experiment.**
+  - `instruct` — direct teaching: explain → example → check understanding.
+  - `coach` — ritual/accountability loops (the Financial Advisor's monthly review).
+  - `observe-correct` — watch Kal perform, interject corrections (Yoga Teacher).
+  - `companion` — open listening, minimal steering (the Monk's check-ins).
+  Modality is declared in `config.yaml`, shapes the SKILL.md session flows, and tunes
+  the perception flow-break cadence ([perception.md](perception.md)) — socratic breaks
+  flow *often* (questions are the medium), companion rarely. Kal's global override can
+  force a modality across skills (e.g. "teach me everything socratically").
 - **Commercial and FOSS skills both allowed.**
 - **Marketplace: undecided — safety first.** Anything touching mental health, money, or
   the body needs a trust story before an open registry exists. Until then: skills are

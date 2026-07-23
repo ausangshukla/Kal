@@ -9,6 +9,8 @@ metadata:
   hermes:
     tags: [Finance, Coaching, Jor, Ritual]
     homepage: https://github.com/ausangshukla/Kal
+  jor:
+    modality: coach
 ---
 
 # Jor — Financial Advisor

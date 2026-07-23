@@ -48,9 +48,15 @@ Little exists to glue here — this is one of the genuinely **missing** pieces w
 Low-fi prior art to study: FluxGarage RoboEyes (Arduino), Vector/Cozmo eye animation
 principles, EMO. See [oss-map.md](oss-map.md).
 
+## Decided: eyes + mouth
+
+The face has **both eyes and a mouth** — the mouth smiles and carries expressions
+(smile, open-talking, flat/firm, small "o" of surprise/confusion), and animates while
+Jor speaks. Prototype renderer lives in [`face/`](../face/) — a standalone page speaking
+the expression protocol, with a bridge (`face/bridge.py`) that maps the live Hermes
+event stream onto expressions.
+
 ## Open questions
 
-- Does the face have a "voice-sync" mouth element, or eyes-only? (Eyes-only is cleaner;
-  audio + eye energy may be enough.)
 - Emotion selection: rule-based from skill config in V1, or model-driven?
 - How much personality drift is allowed per skill before Jor stops feeling like one being?

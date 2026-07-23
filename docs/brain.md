@@ -40,6 +40,26 @@ principle:
 - Skills must therefore never assume a specific model — prompts are written
   model-agnostic, and anything model-sensitive belongs in skill `config.yaml`.
 
+## The interaction loop — who drives?
+
+Three layers, from hard-coded to freeform:
+
+1. **Reflex layer (code-driven, deterministic).** The face reacts to the gateway event
+   stream (listening/thinking/speaking/working) and the perception service injects
+   signals every turn. No model in this loop; it's why Jor feels alive at <300 ms while
+   the brain takes 2–3 s.
+2. **Session structure (skill-scripted).** A skill's SKILL.md defines flows (the finance
+   ritual's six steps) and its **modality** ([skills.md](skills.md)) defines the loop
+   shape — socratic: ask → listen → probe → only then teach → display on canvas. The
+   model follows the script, but enforcement is prompt-level, not code-level.
+3. **Cognition (model-driven, freeform).** Within a step, the model decides what to say,
+   when to call `open_preview`, when to break flow on a perception signal.
+
+So V1 is a **freeform core inside a scripted shell inside a reflex loop**. If
+prompt-level enforcement proves too loose (model skips ritual steps, forgets the canvas),
+the session/persona manager grows into a code-level state machine that feeds the model
+one step at a time — that's the escalation path, not the starting point.
+
 ## What we build (the glue)
 
 1. **The perception bus**: local vision/audio pipelines ([perception.md](perception.md))

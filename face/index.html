@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jor</title>
+<style>
+  :root { --bg: #0b1020; --accent: #7ec8ff; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    font-family: system-ui, sans-serif; overflow: hidden;
+    transition: background 1.2s ease;
+  }
+  canvas { display: block; }
+  #status {
+    position: fixed; top: 10px; left: 12px; color: #4a5a7a; font-size: 12px;
+    letter-spacing: 0.06em; user-select: none;
+  }
+  #controls {
+    position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
+    display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: 92vw;
+  }
+  #controls button {
+    background: #16203a; color: #9db4d8; border: 1px solid #24314f; border-radius: 14px;
+    padding: 5px 12px; font-size: 12px; cursor: pointer;
+  }
+  #controls button:hover { background: #1d2b4d; color: #d5e5fb; }
+  #controls.hidden { display: none; }
+</style>
+</head>
+<body>
+<div id="status">JOR · demo mode</div>
+<canvas id="face"></canvas>
+<div id="controls"></div>
+<script>
+'use strict';
+/* ── Jor face renderer: eyes + mouth, expression protocol v0 ──────────────
+   Command: setExpression({expression, intensity 0..1, accent "#rgb"})
+   All state animates smoothly toward a target pose. */
+
+const POSES = {
+  //                eyeH: eye openness, eyeTilt: inner-brow raise (+sad/-angry),
+  //                lookX/Y: gaze, smile: -1 frown..1 grin, open: mouth openness,
+  //                mouthW: mouth width, breath: body bob speed, accent: theme
+  idle:      { eyeH: 1.00, eyeTilt:  0.00, smile: 0.25, open: 0.00, mouthW: 1.0, energy: 0.3 },
+  listening: { eyeH: 1.10, eyeTilt:  0.05, smile: 0.30, open: 0.05, mouthW: 1.0, energy: 0.5 },
+  thinking:  { eyeH: 0.55, eyeTilt:  0.10, smile: 0.10, open: 0.00, mouthW: 0.8, energy: 0.4, gazeUp: true },
+  speaking:  { eyeH: 1.00, eyeTilt:  0.00, smile: 0.35, open: 0.45, mouthW: 1.0, energy: 0.7, talk: true },
+  happy:     { eyeH: 0.70, eyeTilt: -0.05, smile: 1.00, open: 0.25, mouthW: 1.1, energy: 0.9 },
+  empathic:  { eyeH: 0.80, eyeTilt:  0.30, smile: 0.15, open: 0.00, mouthW: 0.9, energy: 0.25 },
+  firm:      { eyeH: 0.75, eyeTilt: -0.25, smile: -0.10, open: 0.00, mouthW: 1.05, energy: 0.5 },
+  focused:   { eyeH: 0.85, eyeTilt: -0.10, smile: 0.05, open: 0.00, mouthW: 0.9, energy: 0.6 },
+  confused:  { eyeH: 1.05, eyeTilt:  0.20, smile: -0.05, open: 0.30, mouthW: 0.55, energy: 0.5, headTilt: true },
+  concerned: { eyeH: 0.90, eyeTilt:  0.35, smile: -0.30, open: 0.05, mouthW: 0.9, energy: 0.3 },
+  sleepy:    { eyeH: 0.25, eyeTilt:  0.05, smile: 0.15, open: 0.00, mouthW: 0.85, energy: 0.1 },
+  surprised: { eyeH: 1.35, eyeTilt:  0.15, smile: 0.05, open: 0.55, mouthW: 0.6, energy: 0.9 },
+};
+
+const canvas = document.getElementById('face');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+
+let W, H, S; // size + scale unit
+function resize() {
+  W = canvas.width = innerWidth * devicePixelRatio;
+  H = canvas.height = innerHeight * devicePixelRatio;
+  canvas.style.width = innerWidth + 'px';
+  canvas.style.height = innerHeight + 'px';
+  S = Math.min(W, H) / 100; // 100 units fit the short edge
+}
+addEventListener('resize', resize); resize();
+
+// ── animated state ──
+const cur = { eyeH: 1, eyeTilt: 0, smile: 0.25, open: 0, mouthW: 1, energy: 0.3,
+              lookX: 0, lookY: 0, blink: 1, tilt: 0 };
+let target = { ...POSES.idle };
+let currentName = 'idle';
+let intensity = 1;
+let accent = '#7ec8ff';
+
+function setExpression(cmd) {
+  const pose = POSES[cmd.expression];
+  if (!pose) return;
+  currentName = cmd.expression;
+  intensity = cmd.intensity ?? 1;
+  target = pose;
+  if (cmd.accent) {
+    accent = cmd.accent;
+    document.documentElement.style.setProperty('--accent', accent);
+  }
+  statusEl.textContent = 'JOR · ' + statusEl.textContent.split('·')[1].trim().startsWith('live')
+    ? statusEl.textContent : statusEl.textContent; // status text managed by bridge code below
+}
+
+// ── aliveness: blinking, gaze drift, breathing, talking ──
+let nextBlink = performance.now() + 2500;
+let blinkPhase = 0; // 0 = open
+let gazeTarget = { x: 0, y: 0 };
+let nextGazeShift = 0;
+let talkPhase = 0;
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function tick(now) {
+  // blink scheduling (skip when sleepy — lids already low)
+  if (now > nextBlink) { blinkPhase = 1; nextBlink = now + 1800 + Math.random() * 3500; }
+  if (blinkPhase > 0) blinkPhase = Math.max(0, blinkPhase - 0.12);
+  const blink = blinkPhase > 0 ? Math.abs(Math.cos(blinkPhase * Math.PI)) : 1;
+
+  // gaze drift
+  if (now > nextGazeShift) {
+    const r = target.gazeUp ? 0.5 : 1;
+    gazeTarget.x = (Math.random() - 0.5) * 1.6 * r;
+    gazeTarget.y = target.gazeUp ? -0.8 - Math.random() * 0.4 : (Math.random() - 0.5) * 0.9;
+    nextGazeShift = now + 900 + Math.random() * 2600;
+  }
+
+  // ease toward target pose
+  const k = 0.10;
+  for (const p of ['eyeH', 'eyeTilt', 'smile', 'open', 'mouthW', 'energy']) {
+    const goal = lerp(POSES.idle[p], target[p], intensity);
+    cur[p] = lerp(cur[p], goal, k);
+  }
+  cur.lookX = lerp(cur.lookX, gazeTarget.x, 0.06);
+  cur.lookY = lerp(cur.lookY, gazeTarget.y, 0.06);
+  cur.tilt = lerp(cur.tilt, target.headTilt ? 0.06 : 0, 0.05);
+  cur.blink = blink;
+
+  // talking: modulate mouth openness
+  if (target.talk) { talkPhase += 0.35; }
+  const talkMod = target.talk ? (0.55 + 0.45 * Math.sin(talkPhase) * Math.sin(talkPhase * 0.63 + 1)) : 1;
+
+  draw(now, talkMod);
+  requestAnimationFrame(tick);
+}
+
+function draw(now, talkMod) {
+  ctx.clearRect(0, 0, W, H);
+  const cx = W / 2, cy = H / 2;
+  const breath = Math.sin(now / (1400 - 700 * cur.energy)) * S * 0.7 * (0.4 + cur.energy);
+
+  ctx.save();
+  ctx.translate(cx, cy + breath);
+  ctx.rotate(cur.tilt);
+
+  // ── eyes: rounded vertical capsules ──
+  const eyeGap = 26 * S, eyeW = 13 * S;
+  const eyeH = 20 * S * cur.eyeH * cur.blink;
+  const lookX = cur.lookX * 2.2 * S, lookY = cur.lookY * 2.2 * S;
+
+  ctx.fillStyle = accent;
+  ctx.shadowColor = accent; ctx.shadowBlur = 18 * S * (0.3 + 0.7 * cur.energy);
+  for (const side of [-1, 1]) {
+    const ex = side * eyeGap / 1.35 + lookX;
+    const ey = -8 * S + lookY - side * cur.eyeTilt * 0; // vertical center
+    const tiltShift = cur.eyeTilt * 4 * S;              // inner-corner raise
+    ctx.save();
+    ctx.translate(ex, ey);
+    ctx.rotate(side * -cur.eyeTilt * 0.5);
+    roundedCapsule(0, tiltShift * 0.3, eyeW, Math.max(eyeH, 2.2 * S), eyeW / 2);
+    ctx.restore();
+  }
+  ctx.shadowBlur = 0;
+
+  // ── mouth: smile curve / open shape ──
+  const my = 16 * S + lookY * 0.4;
+  const mw = 17 * S * cur.mouthW;
+  const smileLift = cur.smile * 7 * S;
+  const openness = Math.max(0, cur.open * talkMod) * 10 * S;
+
+  ctx.beginPath();
+  if (openness > 0.8 * S) {
+    // open mouth: rounded shape whose top follows the smile curve
+    ctx.moveTo(-mw, my);
+    ctx.quadraticCurveTo(0, my - smileLift, mw, my);
+    ctx.quadraticCurveTo(0, my + smileLift * 0.4 + openness, -mw, my);
+    ctx.closePath();
+    ctx.fillStyle = accent;
+    ctx.fill();
+  } else {
+    // closed mouth: stroke curve (smile / flat / frown)
+    ctx.moveTo(-mw, my - cur.smile * 1.5 * S);
+    ctx.quadraticCurveTo(0, my + smileLift, mw, my - cur.smile * 1.5 * S);
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 3.2 * S;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function roundedCapsule(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.roundRect(x - w / 2, y - h / 2, w, h, r);
+  ctx.fill();
+}
+
+requestAnimationFrame(tick);
+
+// ── demo controls ──
+const controls = document.getElementById('controls');
+for (const name of Object.keys(POSES)) {
+  const b = document.createElement('button');
+  b.textContent = name;
+  b.onclick = () => setExpression({ expression: name });
+  controls.appendChild(b);
+}
+
+// ── bridge connection (live mode) ──
+// bridge.py rebroadcasts Hermes gateway events as {expression, ...} commands
+// on ws://localhost:8732. Falls back to demo mode when absent.
+(function connectBridge() {
+  let ws;
+  try { ws = new WebSocket('ws://localhost:8732'); } catch { return; }
+  ws.onopen = () => {
+    statusEl.textContent = 'JOR · live';
+    controls.classList.add('hidden');
+  };
+  ws.onmessage = (m) => {
+    try { setExpression(JSON.parse(m.data)); } catch {}
+  };
+  ws.onclose = () => {
+    statusEl.textContent = 'JOR · demo mode';
+    controls.classList.remove('hidden');
+    setTimeout(connectBridge, 3000);
+  };
+  ws.onerror = () => ws.close();
+})();
+</script>
+</body>
+</html>

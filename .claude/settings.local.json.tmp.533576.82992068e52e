@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(git init *)",
+      "Bash(git remote *)",
+      "Bash(git fetch *)",
+      "Bash(git branch *)",
+      "Bash(git add *)",
+      "Bash(git commit -m 'Docs-first design for Jor: vision, components, roadmap *)",
+      "Bash(git push *)",
+      "Bash(gh auth *)",
+      "Bash(ssh -T git@github.com -o BatchMode=yes -o ConnectTimeout=5)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:hermes-agent.nousresearch.com)",
+      "Bash(env)",
+      "Bash(curl -fsSL https://hermes-agent.nousresearch.com/install.sh)",
+      "Bash(bash)",
+      "Read(//home/thimmaiah/.hermes/hermes-agent/**)",
+      "Read(//home/thimmaiah/.hermes/hermes-agent/apps/desktop/**)",
+      "Read(//home/thimmaiah/tui_gateway/**)",
+      "Bash(git commit -m 'Spike results: Hermes integration verified; proto financial-advisor skill *)",
+      "Bash(python3 -m py_compile /home/thimmaiah/work/kal/face/bridge.py)",
+      "Bash(git commit -m 'Face prototype \\(eyes + mouth\\), skill modality concept, interaction-loop doc *)"
+    ]
+  }
+}
