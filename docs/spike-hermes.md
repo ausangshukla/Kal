@@ -25,6 +25,25 @@ an external process can join it:
   `hermes_cli/voice.py` through `gateway/stream_events.py`. Until then the face window
   can watch the mic itself.
 
+**Live-test correction (2026-07-23):** session events are routed to **the one transport
+that owns the session** (`write_json`, `tui_gateway/server.py:1194` — `session["transport"]`
+is singular); only session-less globals broadcast to all connected peers. So a second,
+passive WS connection does NOT see events for turns driven from Hermes Desktop's own
+socket. Consequences:
+- **Workaround now:** `face/bridge.py` tails `~/.hermes/logs/agent.log`, whose lines
+  (voice transcription, stream-request open, tool completed, turn ended) map cleanly to
+  listening/thinking/focused/speaking.
+- **Proper fixes:** (a) a **Hermes Desktop plugin** — plugins run inside the owning
+  transport and get the full stream via `host.onEvent('*')` (`apps/desktop/src/sdk`);
+  (b) upstream PR: a read-only `/api/face`-style broadcast endpoint mirroring
+  `events_ws` (`hermes_cli/web_server.py:18207`). PR (b) is promoted to top of the
+  upstream list.
+- Also note: gateway lifecycle **hooks** (`~/.hermes/hooks/`) fire only in the messaging
+  gateway (`gateway/run.py`), not for Desktop chat sessions — not a face signal source.
+- Hermes Desktop spawns its backend on a **random port** with the session token in the
+  child process env (`HERMES_DASHBOARD_SESSION_TOKEN`) — the bridge auto-discovers via
+  `ss -tlnp` + `/proc/<pid>/environ`; `HERMES_PORT`/`HERMES_TOKEN` override.
+
 ## 2. Perception-signal injection — YES for next-turn; interrupt needs a tiny PR
 
 Recommended combination:

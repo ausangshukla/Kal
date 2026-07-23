@@ -8,8 +8,6 @@ http://localhost:8731.
 
 Run:  python3 face/bridge.py        (needs: pip install websockets)
 Then open http://localhost:8731 — status shows "live" when connected.
-
-The face page works without this bridge too (demo mode with buttons).
 """
 
 import asyncio
@@ -21,6 +19,7 @@ import re
 import subprocess
 import threading
 import urllib.request
+import sys
 from pathlib import Path
 
 try:
@@ -31,7 +30,7 @@ except ImportError:
 FACE_HTTP_PORT = 8731
 FACE_WS_PORT = 8732
 
-# event type -> expression command; None payload = ignore event
+# event type -> expression command
 EVENT_MAP = {
     "gateway.ready":    {"expression": "happy", "intensity": 0.6},
     "turn.start":       {"expression": "listening"},
@@ -57,7 +56,6 @@ EVENT_MAP = {
 
 clients: set = set()
 
-
 def _token_from_environ(pid: str) -> str | None:
     try:
         env = open(f"/proc/{pid}/environ", "rb").read().decode(errors="replace")
@@ -68,15 +66,7 @@ def _token_from_environ(pid: str) -> str | None:
             return kv.split("=", 1)[1]
     return None
 
-
-def discover() -> tuple[str, str]:
-    """Find the Hermes backend: (http base, session token).
-
-    Order: HERMES_PORT/HERMES_TOKEN env override -> scan running hermes
-    processes for their listen port + env token (Hermes Desktop spawns a
-    headless backend on a random port) -> classic `hermes dashboard` on
-    9119 (token scraped from the served SPA).
-    """
+def discover() -> tuple[str | None, str | None]:
     port, tok = os.environ.get("HERMES_PORT"), os.environ.get("HERMES_TOKEN")
     if port and tok:
         return f"http://127.0.0.1:{port}", tok
@@ -97,13 +87,14 @@ def discover() -> tuple[str, str]:
         pass
 
     base = "http://127.0.0.1:9119"
-    with urllib.request.urlopen(base + "/", timeout=5) as r:
-        html = r.read().decode("utf-8", "replace")
-    m = re.search(r"__HERMES_SESSION_TOKEN__\s*=\s*['\"]([^'\"]+)['\"]", html)
-    if not m:
-        raise RuntimeError("no Hermes backend found — launch `hermes desktop` or `hermes dashboard`")
-    return base, m.group(1)
-
+    try:
+        with urllib.request.urlopen(base + "/", timeout=5) as r:
+            html = r.read().decode("utf-8", "replace")
+        m = re.search(r"__HERMES_SESSION_TOKEN__\s*=\s*['\"]([^'\"]+)['\"]", html)
+        if m: return base, m.group(1)
+    except: pass
+    
+    return None, None
 
 async def broadcast(cmd: dict):
     dead = set()
@@ -114,56 +105,128 @@ async def broadcast(cmd: dict):
             dead.add(ws)
     clients.difference_update(dead)
 
-
 async def face_client(ws):
     clients.add(ws)
     try:
-        await ws.wait_closed()
+        async for message in ws:
+            try:
+                cmd = json.loads(message)
+                await broadcast(cmd)
+            except json.JSONDecodeError:
+                pass
     finally:
         clients.discard(ws)
 
-
 async def hermes_loop():
-    """Connect to the Hermes event stream; retry forever."""
     while True:
         try:
             base, token = discover()
+            if not base:
+                await asyncio.sleep(5)
+                continue
             url = base.replace("http://", "ws://") + f"/api/ws?token={token}"
-            async with websockets.connect(
-                url, origin=base, ping_interval=20
-            ) as ws:
+            async with websockets.connect(url, origin=base, ping_interval=20) as ws:
                 print(f"bridge: connected to Hermes event stream at {base}")
                 await broadcast(EVENT_MAP["gateway.ready"])
                 async for raw in ws:
-                    for line in str(raw).splitlines():
-                        try:
-                            frame = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        if frame.get("method") != "event":
-                            continue
+                    frame = json.loads(raw)
+                    if frame.get("method") == "event":
                         etype = (frame.get("params") or {}).get("type", "")
                         cmd = EVENT_MAP.get(etype)
                         if cmd:
+                            print(f"bridge: event {etype} -> {cmd['expression']}")
                             await broadcast(cmd)
         except Exception as e:
             print(f"bridge: hermes connection lost ({e}); retrying in 3s")
             await asyncio.sleep(3)
 
+# agent.log line pattern -> expression. Patterns verified against a live
+# desktop-session turn (see docs/spike-hermes.md addendum): the WS event
+# stream is per-session-transport, so for Desktop-driven turns the log is
+# currently the only external signal source.
+LOG_PATTERNS = [
+    (re.compile(r"Transcribed .* via local whisper"), {"expression": "listening"}),
+    (re.compile(r"OpenAI client created \(chat_completion_stream"), {"expression": "thinking"}),
+    (re.compile(r"agent\.tool_executor: tool \S+ completed"), {"expression": "focused"}),
+    (re.compile(r"agent\.tool_executor: Tool .* returned error"), {"expression": "confused", "intensity": 0.7}),
+]
+TURN_END = re.compile(r"conversation_loop: Turn ended")
+
+_turn_end_task = None
+
+
+async def _turn_end_sequence():
+    """Response just streamed to the UI: talk, smile, settle."""
+    await broadcast({"expression": "speaking"})
+    await asyncio.sleep(2.5)
+    await broadcast({"expression": "happy", "intensity": 0.6})
+    await asyncio.sleep(1.5)
+    await broadcast({"expression": "idle"})
+
+
+async def log_watcher():
+    """Tail agent.log and derive expressions for Desktop-driven turns."""
+    global _turn_end_task
+    log_path = Path.home() / ".hermes" / "logs" / "agent.log"
+    if not log_path.exists():
+        print(f"bridge: agent.log not found at {log_path}")
+        return
+
+    print(f"bridge: tailing {log_path}")
+    f = open(log_path, "r")
+    f.seek(0, 2)  # end
+    while True:
+        line = f.readline()
+        if not line:
+            # handle rotation/truncation
+            try:
+                if log_path.stat().st_size < f.tell():
+                    f.close()
+                    f = open(log_path, "r")
+            except OSError:
+                pass
+            await asyncio.sleep(0.3)
+            continue
+
+        if TURN_END.search(line):
+            if _turn_end_task:
+                _turn_end_task.cancel()
+            _turn_end_task = asyncio.create_task(_turn_end_sequence())
+            continue
+        for pat, cmd in LOG_PATTERNS:
+            if pat.search(line):
+                if _turn_end_task:
+                    _turn_end_task.cancel()
+                    _turn_end_task = None
+                await broadcast(cmd)
+                break
 
 def serve_static():
-    handler = functools.partial(
-        http.server.SimpleHTTPRequestHandler, directory=str(Path(__file__).parent)
-    )
-    http.server.ThreadingHTTPServer(("127.0.0.1", FACE_HTTP_PORT), handler).serve_forever()
-
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(Path(__file__).parent))
+    http.server.ThreadingHTTPServer(("0.0.0.0", FACE_HTTP_PORT), handler).serve_forever()
 
 async def main():
     threading.Thread(target=serve_static, daemon=True).start()
+    asyncio.create_task(log_watcher())
     print(f"face page:  http://localhost:{FACE_HTTP_PORT}")
-    async with websockets.serve(face_client, "127.0.0.1", FACE_WS_PORT):
+    async with websockets.serve(face_client, "0.0.0.0", FACE_WS_PORT):
         await hermes_loop()
 
+async def test_trigger(expression, intensity=1.0):
+    try:
+        async with websockets.connect(f"ws://localhost:{FACE_WS_PORT}") as ws:
+            await ws.send(json.dumps({"expression": expression, "intensity": intensity}))
+            print(f"Triggered: {expression}")
+    except Exception as e:
+        print(f"Failed to trigger: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    if len(sys.argv) > 1 and sys.argv[1] == "trigger":
+        expr = sys.argv[2] if len(sys.argv) > 2 else "happy"
+        try:
+            intensity = float(sys.argv[3]) if len(sys.argv) > 3 else 1.0
+        except:
+            intensity = 1.0
+        asyncio.run(test_trigger(expr, intensity))
+    else:
+        asyncio.run(main())
