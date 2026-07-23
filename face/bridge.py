@@ -16,7 +16,9 @@ import asyncio
 import functools
 import http.server
 import json
+import os
 import re
+import subprocess
 import threading
 import urllib.request
 from pathlib import Path
@@ -26,7 +28,6 @@ try:
 except ImportError:
     raise SystemExit("pip install websockets")
 
-HERMES_HTTP = "http://127.0.0.1:9119"
 FACE_HTTP_PORT = 8731
 FACE_WS_PORT = 8732
 
@@ -57,14 +58,51 @@ EVENT_MAP = {
 clients: set = set()
 
 
-def fetch_token() -> str:
-    """Scrape the dashboard session token from the served SPA."""
-    with urllib.request.urlopen(HERMES_HTTP + "/", timeout=5) as r:
+def _token_from_environ(pid: str) -> str | None:
+    try:
+        env = open(f"/proc/{pid}/environ", "rb").read().decode(errors="replace")
+    except OSError:
+        return None
+    for kv in env.split("\0"):
+        if kv.startswith("HERMES_DASHBOARD_SESSION_TOKEN="):
+            return kv.split("=", 1)[1]
+    return None
+
+
+def discover() -> tuple[str, str]:
+    """Find the Hermes backend: (http base, session token).
+
+    Order: HERMES_PORT/HERMES_TOKEN env override -> scan running hermes
+    processes for their listen port + env token (Hermes Desktop spawns a
+    headless backend on a random port) -> classic `hermes dashboard` on
+    9119 (token scraped from the served SPA).
+    """
+    port, tok = os.environ.get("HERMES_PORT"), os.environ.get("HERMES_TOKEN")
+    if port and tok:
+        return f"http://127.0.0.1:{port}", tok
+
+    try:
+        out = subprocess.run(["ss", "-tlnp"], capture_output=True, text=True).stdout
+        for line in out.splitlines():
+            if "hermes" not in line.lower() or "127.0.0.1:" not in line:
+                continue
+            pm = re.search(r"127\.0\.0\.1:(\d+)", line)
+            im = re.search(r"pid=(\d+)", line)
+            if not (pm and im):
+                continue
+            tok = _token_from_environ(im.group(1))
+            if tok:
+                return f"http://127.0.0.1:{pm.group(1)}", tok
+    except OSError:
+        pass
+
+    base = "http://127.0.0.1:9119"
+    with urllib.request.urlopen(base + "/", timeout=5) as r:
         html = r.read().decode("utf-8", "replace")
     m = re.search(r"__HERMES_SESSION_TOKEN__\s*=\s*['\"]([^'\"]+)['\"]", html)
     if not m:
-        raise RuntimeError("session token not found — is `hermes serve`/desktop running?")
-    return m.group(1)
+        raise RuntimeError("no Hermes backend found — launch `hermes desktop` or `hermes dashboard`")
+    return base, m.group(1)
 
 
 async def broadcast(cmd: dict):
@@ -89,12 +127,12 @@ async def hermes_loop():
     """Connect to the Hermes event stream; retry forever."""
     while True:
         try:
-            token = fetch_token()
-            url = f"ws://127.0.0.1:9119/api/ws?token={token}"
+            base, token = discover()
+            url = base.replace("http://", "ws://") + f"/api/ws?token={token}"
             async with websockets.connect(
-                url, origin=HERMES_HTTP, ping_interval=20
+                url, origin=base, ping_interval=20
             ) as ws:
-                print("bridge: connected to Hermes event stream")
+                print(f"bridge: connected to Hermes event stream at {base}")
                 await broadcast(EVENT_MAP["gateway.ready"])
                 async for raw in ws:
                     for line in str(raw).splitlines():
