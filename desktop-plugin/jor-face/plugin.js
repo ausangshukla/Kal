@@ -47,6 +47,52 @@ function forward(type) {
   try { ws.send(JSON.stringify({ hermesEvent: type })) } catch {}
 }
 
+/* ── audio tap: the mouth follows actual TTS playback, not the text stream ──
+   Desktop plays voice via HTMLAudioElement (whole clips) and AudioContext
+   buffer sources (live speech streaming). Patch both; report the silent→
+   playing transition as audio.play and playing→silent as audio.stop. */
+let audioActiveUntil = 0
+let audioStopTimer = null
+
+function markAudio(durationMs) {
+  const now = Date.now()
+  if (now > audioActiveUntil) forward('audio.play')
+  audioActiveUntil = Math.max(audioActiveUntil, now + (durationMs || 800) + 300)
+  if (audioStopTimer) clearTimeout(audioStopTimer)
+  audioStopTimer = setTimeout(() => {
+    if (Date.now() >= audioActiveUntil) { lastSentType = ''; forward('audio.stop') }
+  }, audioActiveUntil - now + 50)
+}
+
+function audioStopped() {
+  audioActiveUntil = 0
+  if (audioStopTimer) clearTimeout(audioStopTimer)
+  lastSentType = ''
+  forward('audio.stop')
+}
+
+function installAudioTap() {
+  if (globalThis.__jorFaceAudioTap) return
+  globalThis.__jorFaceAudioTap = true
+
+  const origPlay = HTMLMediaElement.prototype.play
+  HTMLMediaElement.prototype.play = function (...args) {
+    try {
+      markAudio((this.duration && isFinite(this.duration)) ? this.duration * 1000 : 1500)
+      this.addEventListener('ended', audioStopped, { once: true })
+      this.addEventListener('pause', audioStopped, { once: true })
+      this.addEventListener('timeupdate', () => markAudio(600))
+    } catch {}
+    return origPlay.apply(this, args)
+  }
+
+  const origStart = AudioBufferSourceNode.prototype.start
+  AudioBufferSourceNode.prototype.start = function (...args) {
+    try { markAudio(this.buffer ? this.buffer.duration * 1000 : 500) } catch {}
+    return origStart.apply(this, args)
+  }
+}
+
 function JorChip() {
   return jsx(Tip, {
     label: 'Jor face link — forwards agent events to the face window',
@@ -69,6 +115,7 @@ export default {
     ctx.i18n.register({ en: { chip: 'Jor' } })
     closePrevious()
     connect()
+    installAudioTap()
     host.onEvent('*', (evt) => { if (evt?.type) forward(evt.type) })
     ctx.register({
       id: 'chip',

@@ -107,6 +107,54 @@ async def broadcast(cmd: dict):
     clients.difference_update(dead)
 
 _last_plugin_event = 0.0
+_voice_active_until = 0.0  # rolling: set on real TTS playback
+
+
+async def _handle_plugin_event(etype: str):
+    """Map a live desktop event to a face expression.
+
+    Voice-aware: the mouth follows actual TTS playback (audio.play/audio.stop
+    from the plugin's audio tap), not the text stream. While a voice session
+    is active (TTS heard in the last 15 min), streaming text renders as
+    *thinking* — Jor is composing what he's about to say — and speaking waits
+    for the audio.
+    """
+    global _turn_end_task, _voice_active_until
+    now = time.time()
+    voice_mode = now < _voice_active_until
+
+    def cancel_settle():
+        global _turn_end_task
+        if _turn_end_task:
+            _turn_end_task.cancel()
+            _turn_end_task = None
+
+    if etype == "audio.play":
+        _voice_active_until = now + 900
+        cancel_settle()
+        await broadcast({"expression": "speaking"})
+    elif etype == "audio.stop":
+        cancel_settle()
+        _turn_end_task = asyncio.create_task(_settle_sequence())
+    elif etype in ("turn.end", "message.complete"):
+        cancel_settle()
+        if voice_mode:
+            # audio may still be coming — hold, settle only if it never arrives
+            _turn_end_task = asyncio.create_task(_delayed_settle(6.0))
+        else:
+            _turn_end_task = asyncio.create_task(_settle_sequence())
+    else:
+        cmd = EVENT_MAP.get(etype)
+        if cmd:
+            if voice_mode and cmd["expression"] == "speaking":
+                cmd = {"expression": "thinking"}
+            cancel_settle()
+            await broadcast(cmd)
+
+
+async def _delayed_settle(delay: float):
+    await asyncio.sleep(delay)
+    await _settle_sequence()
 
 
 async def face_client(ws):
@@ -125,17 +173,7 @@ async def face_client(ws):
             etype = obj.get("hermesEvent")
             if etype:
                 _last_plugin_event = time.time()
-                if etype in ("turn.end", "message.complete"):
-                    if _turn_end_task:
-                        _turn_end_task.cancel()
-                    _turn_end_task = asyncio.create_task(_settle_sequence())
-                    continue
-                cmd = EVENT_MAP.get(etype)
-                if cmd:
-                    if _turn_end_task:
-                        _turn_end_task.cancel()
-                        _turn_end_task = None
-                    await broadcast(cmd)
+                await _handle_plugin_event(etype)
             elif "expression" in obj:
                 await broadcast(obj)
     finally:
