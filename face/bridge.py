@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 import urllib.request
 import sys
 from pathlib import Path
@@ -105,15 +106,38 @@ async def broadcast(cmd: dict):
             dead.add(ws)
     clients.difference_update(dead)
 
+_last_plugin_event = 0.0
+
+
 async def face_client(ws):
+    """Face pages AND the desktop plugin connect here. The plugin sends
+    {"hermesEvent": type} frames (real-time, per-token) which take priority
+    over the log-tail fallback; {"expression": ...} frames (trigger CLI,
+    tests) broadcast as-is."""
+    global _last_plugin_event, _turn_end_task
     clients.add(ws)
     try:
         async for message in ws:
             try:
-                cmd = json.loads(message)
-                await broadcast(cmd)
+                obj = json.loads(message)
             except json.JSONDecodeError:
-                pass
+                continue
+            etype = obj.get("hermesEvent")
+            if etype:
+                _last_plugin_event = time.time()
+                if etype in ("turn.end", "message.complete"):
+                    if _turn_end_task:
+                        _turn_end_task.cancel()
+                    _turn_end_task = asyncio.create_task(_settle_sequence())
+                    continue
+                cmd = EVENT_MAP.get(etype)
+                if cmd:
+                    if _turn_end_task:
+                        _turn_end_task.cancel()
+                        _turn_end_task = None
+                    await broadcast(cmd)
+            elif "expression" in obj:
+                await broadcast(obj)
     finally:
         clients.discard(ws)
 
@@ -156,9 +180,15 @@ _turn_end_task = None
 
 
 async def _turn_end_sequence():
-    """Response just streamed to the UI: talk, smile, settle."""
+    """Log-tail path: response already streamed by the time the log line
+    lands — talk briefly, smile, settle."""
     await broadcast({"expression": "speaking"})
     await asyncio.sleep(2.5)
+    await _settle_sequence()
+
+
+async def _settle_sequence():
+    """Plugin path: speaking already happened live — smile, then rest."""
     await broadcast({"expression": "happy", "intensity": 0.6})
     await asyncio.sleep(1.5)
     await broadcast({"expression": "idle"})
@@ -186,6 +216,10 @@ async def log_watcher():
             except OSError:
                 pass
             await asyncio.sleep(0.3)
+            continue
+
+        # the desktop plugin's real-time events supersede the log tail
+        if time.time() - _last_plugin_event < 8:
             continue
 
         if TURN_END.search(line):
